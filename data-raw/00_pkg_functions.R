@@ -356,8 +356,13 @@ map_neon_data_to_ecocomDP.FISH <- function(
   fsh_dat_bulk$reachID <- ifelse(is.na(fsh_dat_bulk$reachID),
                                  substr(fsh_dat_bulk$eventID, 1, 16),
                                  fsh_dat_bulk$reachID)
-
-  # combine indiv and bulk counts
+  
+  # add taxonRank into fsh_dat from full_taxon_fish
+    # join the above with bulkCount dataset
+  fsh_dat_bulk <- dplyr::left_join(fsh_dat_bulk, dplyr::select(full_taxon_fish, taxonID, scientificName, taxonRank), 
+                                   by = c("taxonID", "scientificName"))
+    
+    # combine indiv and bulk counts
   fsh_dat <- dplyr::bind_rows(fsh_dat_indiv, fsh_dat_bulk)
 
   # add count = 1 for indiv data
@@ -365,17 +370,8 @@ map_neon_data_to_ecocomDP.FISH <- function(
   # after bind, the bulk count col has "NAs" need to add "1", since indiv col has individual fish per row
   fsh_dat$count <- ifelse(is.na(fsh_dat$bulkFishCount), 1, fsh_dat$bulkFishCount)
 
-
-  # in case the bulk count data set does not have a column on taxonomic rank, as such, need to add it here.
-  # in scientificName column-- species identified below species level (genus, family, order, phylum)-- appear as sp. or spp.
-  # both sp. and spp. identifications should be marked low-res identifications, aka above species level in ranking
-  # and exclude from this analyses
-  # fsh_dat <- fsh_dat %>%
-  #   dplyr::mutate(taxonRank = dplyr::case_when(stringr::str_detect(string = scientificName, pattern = " spp.$") ~ "not_sp_level1",
-  #                                              stringr::str_detect(string = scientificName, pattern = " sp.$") ~ "not_sp_level2", TRUE ~ "species"))
-
-  # get all records that have rank <= genus
-  fsh_dat_fine <- dplyr::filter(fsh_dat, taxonRank %in% c("species", "subspecies", "genus"))
+    # get all records that have rank upto subspecies, variable taxonomic resolution
+  fsh_dat_fine <- dplyr::filter(fsh_dat, taxonRank %in% c("class", "family", "genus", "order", "phylum", "species", "subgenus", "subspecies"))
 
   # select passes with no fish were caught
   no_fsh <- dplyr::filter(all_fish$fsh_perPass, targetTaxaPresent == "N")
@@ -695,7 +691,7 @@ map_neon_data_to_ecocomDP.MOSQUITO <-
     sum(is.na(data_mosquito$individualCount)) # 1824
     sum(is.na(data_mosquito$scientificName))
     sum(is.na(data_mosquito$taxonID))
-    table(data_mosquito$taxonRank)
+    table(data_mosquito$taxonRank) # family, genus, species, and subspecies
     table(data_mosquito$sampleCondition)
     table(data_mosquito$targetTaxaPresent)
 
@@ -760,8 +756,8 @@ map_neon_data_to_ecocomDP.PLANT <- function(
   # species in 100m2 only (remove species already in 1m2 or 10m2)
   div_10_100_m2_4 <- dplyr::filter(div_10_100_m2_2, key2 == key3,
                                    !key3 %in% unique(c(div_1m2_pla$key3, div_10_100_m2_3$key3)))
-  div_10_100_m2_5 = dplyr::bind_rows(dplyr::mutate(div_10_100_m2_3, sample_area_m2 = 10),
-                                     dplyr::mutate(div_10_100_m2_4, sample_area_m2 = 100))
+  div_10_100_m2_5 = dplyr::bind_rows(dplyr::mutate(div_10_100_m2_3, sample_area_m2 = 100),
+                                     dplyr::mutate(div_10_100_m2_4, sample_area_m2 = 10000))
 
   # stack data
   data_plant = dplyr::bind_rows(
@@ -842,10 +838,14 @@ map_neon_data_to_ecocomDP.SMALL.MAMMAL <- function(
   ### remove all where the fate of the individual, unless marked and released, is
   ### 'dead' = dead, 'escaped' = escaped while handling, 'nontarget' = released, non-target species,
   ### should 'released' (= target or opportunistic species released without full processing) be also removed?
+    ## D Li: probably not, released have 64,400 records and processed only have 7,365
+  table(dat.mam$fate)
   dat.mam <- dplyr::filter(dat.mam, !fate %in% c("dead", "escaped", "nontarget"))
   #dat.mam <- filter(dat.mam, fate != "released")
 
   # unique(dat.mam$scientificName)
+  group_by(dat.mam, taxonRank) %>% tally() # mostly are sp and genus level
+  dat.mam <- dplyr::filter(dat.mam, taxonRank %in% c("genus", "species", "subspecies", NA))
 
   ### Remove recaptures -- Y and U (unknown); only retain N
   # table(dat.mam$recapture)
@@ -1609,7 +1609,7 @@ map_neon_data_to_ecocomDP.BIRD <- function(
   table(data_bird$samplingImpracticalRemarks)
   data_bird = dplyr::select(data_bird, -uid, -identifiedBy, -publicationDate,
                             -eventID, # it is just plotID, pointID, startDate
-                            -laboratoryName, -samplingProtocolVersion, -measuredBy,
+                            -laboratoryName, -measuredBy,
                             -samplingImpractical, -samplingImpracticalRemarks)
 
   table(data_bird$clusterCode)
@@ -1617,6 +1617,7 @@ map_neon_data_to_ecocomDP.BIRD <- function(
   table(data_bird$targetTaxaPresent)
   table(data_bird$remarks)
   table(data_bird$taxonRank)
+  table(data_bird$samplingProtocolVersion)
   return(data_bird)
 }
 
