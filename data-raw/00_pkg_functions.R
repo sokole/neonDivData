@@ -148,6 +148,8 @@ map_neon_data_to_ecocomDP.ALGAE <- function(
   table(data_algae$algalParameter)
   table(data_algae$cell_density_standardized_unit)
 
+  data_algae = dplyr::rename(data_algae, taxonID = acceptedTaxonID)
+
   return(data_algae)
 }
 
@@ -356,12 +358,12 @@ map_neon_data_to_ecocomDP.FISH <- function(
   fsh_dat_bulk$reachID <- ifelse(is.na(fsh_dat_bulk$reachID),
                                  substr(fsh_dat_bulk$eventID, 1, 16),
                                  fsh_dat_bulk$reachID)
-  
+
   # add taxonRank into fsh_dat from full_taxon_fish
     # join the above with bulkCount dataset
-  fsh_dat_bulk <- dplyr::left_join(fsh_dat_bulk, dplyr::select(full_taxon_fish, taxonID, scientificName, taxonRank), 
+  fsh_dat_bulk <- dplyr::left_join(fsh_dat_bulk, dplyr::select(full_taxon_fish, taxonID, scientificName, taxonRank),
                                    by = c("taxonID", "scientificName"))
-    
+
     # combine indiv and bulk counts
   fsh_dat <- dplyr::bind_rows(fsh_dat_indiv, fsh_dat_bulk)
 
@@ -542,7 +544,7 @@ map_neon_data_to_ecocomDP.MACROINVERTEBRATE <- function(
                   sampleID,
                   namedLocation,
                   collectDate,
-                  acceptedTaxonID,
+                  taxonID = acceptedTaxonID,
                   scientificName,
                   family,
                   taxonRank,
@@ -1415,7 +1417,7 @@ map_neon_data_to_ecocomDP.TICK <- function(
   table(data_tick$plotType) # all distributed
   table(str_sub(data_tick$namedLocation, 10)) # all tickPlot.tck
   data_tick = dplyr::select(data_tick, -plotType) %>% dplyr::distinct()
-
+  data_tick = dplyr::rename(data_tick, taxonID = acceptedTaxonID)
   # NOTES FOR END USERS  #
   # be aware of higher order taxa ID -- they are individuals ASSIGNED at a higher taxonomic class, rather than the sum of lower tax. class
   # higher order taxonomic assignments could be semi-identified by looking at most likely ID (e.g. if 200 of 700 larvae are IXOSPAC, very likely that the Unidentified larvae are IXOSPAC)
@@ -1620,4 +1622,334 @@ map_neon_data_to_ecocomDP.BIRD <- function(
   table(data_bird$samplingProtocolVersion)
   return(data_bird)
 }
+
+map_neon_data_to_ecocomDP.ZOOPLANKTON <- function(
+  neon.data.product.id = "DP1.20219.001",
+  ...){
+  # authors: Lara Janson, Stephanie Parker
+  allTabs_zoop <- neonUtilities::loadByProduct(
+    dpID = neon.data.product.id,
+    check.size = FALSE)
+  saveRDS(allTabs_zoop, file = "~/Documents/allTabs_zoop.rds")
+  allTabs_zoop = readRDS("~/Documents/allTabs_zoop.rds")
+
+  # download field data
+  zoo_fielddata <- tibble::as_tibble(allTabs_zoop$zoo_fieldData)
+
+  # download zooplankton counts
+  zoo_taxonomyProcessed <- tibble::as_tibble(allTabs_zoop$zoo_taxonomyProcessed)
+
+  # Location table
+  table_location <- zoo_fielddata %>%
+    select(domainID:sampleID, samplerType, towsTrapsVolume) %>%
+    select(-additionalCoordUncertainty) %>%
+    distinct()
+
+
+  # Observation table
+  data_zooplankton <- zoo_taxonomyProcessed %>%
+    filter(sampleCondition == "condition OK") %>%
+    select(sampleID, subsampleType,
+           taxonID, scientificName, family, taxonRank, identificationReferences,
+           # zooVolumePerBottle,
+           # zooSubsampleVolume,
+           # individualCount,
+           adjCountPerBottle,
+           zooMinimumLength, zooMaximumLength, zooMeanLength) %>%
+    left_join(table_location, by = "sampleID") %>%
+    mutate(density = adjCountPerBottle / towsTrapsVolume,
+           density_unit = 'count per liter') %>%
+    distinct()
+
+  return(data_zooplankton)
+}
+
+map_neon_data_to_ecocomDP.HERP <-
+  function(neon.data.product.id = "DP1.10022.001",  # beetle dpid to get herp bycatch
+           chkdata = FALSE, # run the code that checks the data
+           group_nonherps = TRUE, # run the code that aggregates the non-herps into sampleType:not herp
+           herps_only = TRUE, # run the code that only gives you the samples with herps
+           print_summary = FALSE, # print a summary table of the data
+           ...) {
+  # authors: Matt Helmus (mrhelmus@temple.edu) repurposed Kari Norman's beetle code
+
+  ### Get the Data
+  bycatch_raw <- neonUtilities::loadByProduct(dpID = neon.data.product.id,
+                                              check.size = FALSE, ...
+                                              # if there is a problem with code then use expanded
+                                              #package = "expanded"
+                                              )
+
+  ### Wrangle Field Data
+
+  # 1. Get the fielddata table that contains metadata for all sampling events.
+  # 1. Clean up the trappingDays, which is a metric of catch per unit effort
+  # 1. Clean eventID that provides the unique key for the events.
+  # 1. Select the important variables and toss the rest.
+  # 1. Calculate trappingDays as the length of time a pitfall trap was set
+
+  tidy_fielddata <- tibble::as_tibble(bycatch_raw$bet_fielddata) # get field data
+
+  # check data - there are some NAs in the trappingDays (unit effort)
+  if(chkdata) any(is.na(tidy_fielddata$trappingDays))
+
+  tidy_fielddata <- tidy_fielddata %>%
+    dplyr::select(namedLocation,  # select needed variables
+                  domainID,  siteID, plotID, trapID, nlcdClass,
+                  decimalLatitude, decimalLongitude,
+                  geodeticDatum, coordinateUncertainty,
+                  elevation, elevationUncertainty,
+                  setDate, collectDate, eventID, trappingDays,
+                  sampleCollected, sampleID, sampleCondition,
+                  samplingImpractical, remarksFielddata = remarks) %>%
+    dplyr::mutate(eventID_raw = eventID,
+                  eventID = stringr::str_remove_all(eventID, "[.]")) %>% # remove periods from eventID's (cleans an inconsistency)
+    dplyr::mutate(trappingDays = # add sampling effort in days (trappingdays)
+                    lubridate::interval(lubridate::ymd(setDate),
+                                        lubridate::ymd(collectDate)) %/%
+                    lubridate::days(1))
+
+  # check data - no more NAs, but there are some edits that need to be made below
+  if(chkdata) any(is.na(tidy_fielddata$trappingDays))
+
+  # 1. Make object with cleaned up serial bouts
+  # There are some traps that have multiple bouts for the same setDate. This is
+  # indicated by having the same setDate but different collectDates for a trap.
+  # This indicates that the traps were reset to being open and sampling after a bout.
+  # This serial sampling can also be seen by having unique eventIDs for each of these
+  # serial bouts. To remedy this situation, trapping days should be calculated from
+  # the previous collectDate, not the recorded setDate. To do this:
+
+  adjTrappingDays <- tidy_fielddata %>%
+    select(namedLocation, trapID, setDate, collectDate, trappingDays, eventID) %>%
+    group_by(namedLocation, trapID, setDate) %>%
+    filter(n_distinct(collectDate) > 1) %>% # filter those with more than one collectDate
+    mutate(totalSerialBouts = n_distinct(collectDate))
+
+  # check the data
+  # If the total setDates for any serial bout is >2 then the code may not work.
+  if(chkdata){
+    print(paste("The max serial bouts for any trap is", max(adjTrappingDays$totalSerialBouts)))
+  }
+
+  #1. take the difference and use this as the new trapping days
+  adjTrappingDays <- adjTrappingDays %>%
+    mutate(diffTrappingDays = # as long as there are only 2 bouts this works
+             trappingDays - min(trappingDays)) %>%
+    mutate(adjTrappingDays = # if the difference is 0 then trappingDays
+             case_when(diffTrappingDays == 0 ~ trappingDays,
+                       TRUE ~ diffTrappingDays)) # otherwise use the difference
+
+  # check the data
+  # There are long bouts and 0 day bouts,
+  # but for now leave in data
+  if(chkdata){
+    table(adjTrappingDays$adjTrappingDays)
+    filter(adjTrappingDays, adjTrappingDays == 0) # there are some that were set for one day
+    filter(adjTrappingDays, adjTrappingDays > 21) %>% print(n=200) # some that were set for a long time
+  }
+
+  # 1. Drop some columns from adjTrappingDays
+  adjTrappingDays <- adjTrappingDays %>% # drop some columns
+    select(-c(trappingDays, diffTrappingDays, totalSerialBouts))
+
+  # 1. Join trapping days to adjTrappingDays
+  tidy_fielddata <- left_join(tidy_fielddata, adjTrappingDays)
+
+  # check the data
+  if(chkdata){
+    tidy_fielddata %>%
+      select(namedLocation, trappingDays, adjTrappingDays) %>%
+      filter(!is.na(adjTrappingDays)) %>%
+      print(n=200) # need to replace trapping days
+  }
+
+  #1. Adjust the trapping days
+  tidy_fielddata <- tidy_fielddata %>%
+    mutate(trappingDays =
+             case_when(!is.na(adjTrappingDays) ~ adjTrappingDays, # use adjTrappingDays
+                       TRUE ~ trappingDays # otherwise just use trappingDays
+             )) %>% select(-adjTrappingDays) # clean up the variables
+
+  # check the data
+  # for some eventID's (bouts) collection happened over two days
+  if(chkdata){
+    select(tidy_fielddata, eventID, collectDate) %>%
+      unique() %>%
+      group_by(eventID) %>%
+      summarize(n())
+
+    filter(tidy_fielddata, eventID == "ABBY201733") %>% print(n = 50)
+  }
+
+  # 1. Change collectDate to the date that majority of traps were collected on
+  Mode <- function(x) { # calculate mode of a column/vector
+    ux <- unique(x)
+    ux[which.max(tabulate(match(x, ux)))]
+  }
+
+  tidy_fielddata <- tidy_fielddata %>%
+    dplyr::group_by(eventID) %>%
+    dplyr::mutate(collectDate = Mode(collectDate)) %>%
+    dplyr::ungroup()
+
+
+  # 1. Create a boutID that identifies all trap collection events at a site in the same bout (replacing eventID).
+  # there are some sites for which all traps were set and collect on the same date, but have multiple eventID's
+  # we want to consider that as all one bout so we create a new ID based on the site and collectDate
+
+  tidy_fielddata <-  tidyr::unite(tidy_fielddata, boutID, siteID, collectDate, remove = FALSE) #%>%
+  #dplyr::select(-eventID) # beetles dropped the eventID, here I keep it
+
+
+  ### Wrangle the Sorting data ###
+
+  # 1. join with bet_sorting that has the bycatch in each sample
+
+  tidy_sorting <- bycatch_raw$bet_sorting %>% # select the variables that make the most sense to keep
+    dplyr::select(sampleID, subsampleID, sampleType, taxonID, scientificName,
+                  taxonRank, identificationReferences, individualCount,
+                  nativeStatusCode, remarksSorting  = remarks) %>%
+    tibble::as_tibble()
+
+  # check data -  there are some sampleIDs in sorting that are not in fielddata for an unknown reason
+  if(chkdata){
+    setdiff(unique(tidy_sorting$sampleID), unique(tidy_fielddata$sampleID))
+    filter(tidy_sorting, sampleID == "KONA_007.E.20200902") # this sample is missing from fielddata (as of writing this code)
+
+    # check data -  there are some sampleIDs in fielddata that are not in sorting for an unknown reason
+    length(unique(tidy_fielddata$sampleID))
+    length(unique(tidy_sorting$sampleID))
+
+    # check data - there are a lot of sampleIDs that are NAs in the fielddata  these seem to be ones that could not be collected
+    tidy_fielddata %>%
+      filter(is.na(sampleID))
+
+    tidy_sorting %>%
+      filter(is.na(sampleID))
+  }
+
+  ### Produce the Full Data Set ###
+
+  # 1. perform full_join on fielddata and sorting to make sure to get all the sampleIDs and remove missing sampleIDs
+
+  data_herp_bycatch <- tidy_fielddata %>%
+    dplyr::full_join(tidy_sorting) %>%
+    filter(!is.na(sampleID)) # remove all of the sampleIDs that are NAs
+
+  # check data - it seems like we have all of the sampleIDs and species from sorting joined ok
+  if(chkdata){
+    length(unique(tidy_fielddata$sampleID))
+    length(unique(tidy_sorting$sampleID))
+    setdiff(unique(tidy_fielddata$sampleID), unique(tidy_sorting$sampleID))
+    length(setdiff(unique(tidy_fielddata$sampleID), unique(tidy_sorting$sampleID)))
+    dim(data_herp_bycatch)[1] - dim(tidy_sorting)[1]
+
+    filter(data_herp_bycatch, sampleID == "BLAN_002.N.20160526") # this sample is missing from sorting (as of writing this code)
+
+    data_herp_bycatch %>%
+      filter(is.na(sampleType)) %>%
+      group_by(sampleID) %>%
+      summarise(n())
+  }
+
+  # 1. Clean up the data_herp_bycatch so that it is focused on vert bycatch herp
+
+  # sampleType provides the categories
+  if(chkdata) unique(data_herp_bycatch$sampleType) # note the NAs come from the fielddata without sorting data
+  unique(filter(data_herp_bycatch, sampleType != "vert bycatch herp")$taxonID)
+
+  data_herp_bycatch <- data_herp_bycatch %>%
+    mutate(sampleType =
+             case_when(is.na(sampleType) ~ "no data collected", # add a level for the missing sorting data
+                       TRUE ~ sampleType)) %>%
+    mutate(sampleCondition =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ sampleCondition)) %>%
+    mutate(samplingImpractical =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ samplingImpractical)) %>%
+    mutate(remarksFielddata =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ remarksFielddata)) %>%
+    mutate(subsampleID =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ subsampleID)) %>%
+    mutate(taxonID =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ taxonID)) %>%
+    mutate(taxonRank =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ taxonRank)) %>%
+    mutate(scientificName =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ scientificName)) %>%
+    # mutate(identificationQualifier =
+    #          case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+    #                    TRUE ~ identificationQualifier)) %>%
+    # mutate(morphospeciesID =
+    #          case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+    #                    TRUE ~ morphospeciesID)) %>%
+    mutate(identificationReferences =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ identificationReferences)) %>%
+    mutate(nativeStatusCode =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ nativeStatusCode)) %>%
+    mutate(remarksSorting =
+             case_when(sampleType!="vert bycatch herp" ~ NA_character_,
+                       TRUE ~ remarksSorting))
+
+  # 1. Decide if you don't care about any of the other sampleTypes
+
+  if(group_nonherps) { # group all nonherps
+    data_herp_bycatch <-  data_herp_bycatch  %>%
+      mutate(sampleType =
+               case_when(sampleType != "vert bycatch herp" ~ "not herp", # add a level for the missing sorting data
+                         TRUE ~ sampleType)) %>%
+      group_by(sampleID, sampleType, scientificName) %>%
+      mutate(individualCount_sum = sum(individualCount, na.rm = TRUE)) %>% # sum up all of the not herps
+      mutate(individualCount_sum = na_if(individualCount_sum, 0)) %>% # put NA back in the fielddata with missing sorting data
+      mutate(individualCount = individualCount_sum) %>% # replace with the new cout
+      dplyr::select(-individualCount_sum) %>% # clean up
+      ungroup() # clean up
+  }
+
+  # 1. Remove the redundant rows
+  data_herp_bycatch <- dplyr::distinct(data_herp_bycatch)
+
+  if(chkdata){ # do all of the columns have data
+    data_herp_bycatch %>% select_if(~sum(!is.na(.)) > 0)
+    data_herp_bycatch %>% filter(!is.na(morphospeciesID))
+  }
+
+
+  # check data - output a summary table of the data
+  if(print_summary) {
+    data_herp_bycatch %>%
+      group_by(siteID) %>%
+      filter(sampleType == "vert bycatch herp") %>%
+      summarise( 'herp species richness' = n_distinct(scientificName, na.rm = TRUE),
+                 'herp individualCount total' = sum(individualCount),
+                 '# traps with herps' = n_distinct(sampleID)) %>% print(n = 100)
+  }
+
+  # these NA rows are from the sorting data that is not in the fielddata
+  if(chkdata) filter(data_herp_bycatch, is.na(siteID))
+
+  #1. Do you only want samples with herps?
+  if(herps_only) {
+    data_herp_bycatch <- filter(data_herp_bycatch, sampleType == "vert bycatch herp",
+                        (is.na(sampleCondition) | sampleCondition == "OK")) %>%
+      select(-boutID, # just siteID and colectDate
+             -sampleCollected, # all Y
+             -sampleID,  -sampleCondition, -samplingImpractical,
+             -eventID_raw, -subsampleID,
+             -sampleType # all "vert bycatch herp"
+             )
+  }
+
+  return(data_herp_bycatch)
+}
+
 
